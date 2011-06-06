@@ -1,0 +1,12 @@
+--- pcmcia-cs-3.2.4/modules/Makefile
++++ pcmcia-cs-3.2.4/modules/Makefile
+@@ -42,6 +42,9 @@
+ ifdef CONFIG_PCI
+ SRCS    += pci_fixup.c
+ CORE    += pci_fixup.o
++
++SRCS	+= plx9052.c
++MODULES	+= plx9052.o
+ endif
+ 
+ ifdef CONFIG_PNP_BIOS

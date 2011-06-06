@@ -1,0 +1,31 @@
+--- linux.orig/drivers/pcmcia/Kconfig
++++ linux/drivers/pcmcia/Kconfig
+@@ -80,6 +80,18 @@
+ 	  "Bridge" is the name used for the hardware inside your computer that
+ 	  PCMCIA cards are plugged into. If unsure, say N.
+ 
++config PLX9052
++	tristate "PLX9052 host bridge support"
++	depends on PCMCIA
++	help
++	  Say Y here to include support for the PLX9052 based PCMCIA
++	  host bridges. These are normally used in "PCI wireless cards"
++	  that actually have a PCMCIA card inside. Please note that the PLX9052
++	  chip has very limited functionality to support PCMCIA and may not
++	  support many PCMCIA cards.
++	  "Bridge" is the name used for the hardware inside your computer that
++	  PCMCIA cards are plugged into. If unsure, say N.
++
+ config HD64465_PCMCIA
+ 	tristate "HD64465 host bridge support"
+ 	depends on HD64465 && PCMCIA
+--- linux.orig/drivers/pcmcia/Makefile
++++ linux/drivers/pcmcia/Makefile
+@@ -8,6 +8,7 @@
+ obj-$(CONFIG_I82365)				+= i82365.o
+ obj-$(CONFIG_I82092)				+= i82092.o
+ obj-$(CONFIG_TCIC)				+= tcic.o
++obj-$(CONFIG_PLX9052)				+= plx9052.o
+ obj-$(CONFIG_HD64465_PCMCIA)			+= hd64465_ss.o
+ obj-$(CONFIG_PCMCIA_SA1100)			+= sa11xx_core.o sa1100_cs.o
+ obj-$(CONFIG_PCMCIA_SA1111)			+= sa11xx_core.o sa1111_cs.o
