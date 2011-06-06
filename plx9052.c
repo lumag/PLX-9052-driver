@@ -1,9 +1,9 @@
 /*======================================================================
 
     Device driver for PLX9052 PCI-to-PCMCIA bridges.
-    Version 0.1.5.
 
     (C) 2003 Pavel Roskin <proski@gnu.org>
+    (C) 2011 Dmitry Eremin-Solenikov <dbaryshkov@gmail.com>
 
     The contents of this file are subject to the Mozilla Public
     License Version 1.1 (the "License"); you may not use this file
@@ -29,32 +29,11 @@
 ======================================================================*/
 
 #include <linux/module.h>
-#include <linux/init.h>
-#include <linux/config.h>
-#include <linux/types.h>
-#include <linux/fcntl.h>
-#include <linux/string.h>
 #include <linux/kernel.h>
-#include <linux/errno.h>
-#include <linux/timer.h>
-#include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
-#include <linux/ioport.h>
-#include <linux/delay.h>
-#include <linux/spinlock.h>
-#include <linux/workqueue.h>
-#include <linux/version.h>
-#include <asm/irq.h>
-#include <asm/io.h>
-#include <asm/bitops.h>
-#include <asm/system.h>
 
-#include <pcmcia/version.h>
-#include <pcmcia/cs_types.h>
 #include <pcmcia/ss.h>
-#include <pcmcia/cs.h>
 
 /*====================================================================*/
 
@@ -188,13 +167,13 @@ static int plx9052_align_check(u32 base, u32 len)
 
 
 static inline void plx9052_outl(struct plx9052_socket *socket, u32 val,
-				ioaddr_t addr)
+				unsigned addr)
 {
 	outl_p(val, socket->plxctl_addr + addr);
 }
 
 
-static inline u32 plx9052_inl(struct plx9052_socket *socket, ioaddr_t addr)
+static inline u32 plx9052_inl(struct plx9052_socket *socket, unsigned addr)
 {
 	return inl_p(socket->plxctl_addr + addr);
 }
@@ -240,8 +219,10 @@ static inline int plx9052_card_present(struct plx9052_socket *socket)
 }
 
 
-static void plx9052_event(struct plx9052_socket *socket)
+static void plx9052_event(struct work_struct *work)
 {
+	struct plx9052_socket *socket =
+		container_of(work, struct plx9052_socket, event_work);
 	u_int event;
 
 	if (!socket->handler)
@@ -401,17 +382,6 @@ static int plx9052_get_status(struct pcmcia_socket *sock, u_int *value)
 }
 
 
-static int plx9052_get_socket(struct pcmcia_socket *sock,
-			      socket_state_t *state)
-{
-	struct plx9052_socket *socket =
-	    container_of(sock, struct plx9052_socket, socket);
-
-	*state = socket->state;
-	return 0;
-}
-
-
 static int plx9052_set_socket(struct pcmcia_socket *sock,
 			      socket_state_t *state)
 {
@@ -457,7 +427,7 @@ static int plx9052_set_io_map(struct pcmcia_socket *sock,
 	len = io->stop + 1 - io->start;
 	if (len > PLX_IOWIN_MAX) {
 		printk(KERN_ERR
-		       "Requested I/O area 0x%x-0x%x is too long\n",
+		       "Requested I/O area 0x%Lx-0x%Lx is too long\n",
 		       io->start, io->stop);
 		return -EINVAL;
 	}
@@ -484,7 +454,7 @@ static int plx9052_set_io_map(struct pcmcia_socket *sock,
 	if (plx9052_align_check(io->start, split - io->start) ||
 	    plx9052_align_check(split, io->stop + 1 - split)) {
 		printk(KERN_ERR
-		       "I/O area 0x%x-0x%x is too badly unaligned\n",
+		       "I/O area 0x%Lx-0x%Lx is too badly unaligned\n",
 		       io->start, io->stop);
 		return -ENOTSUPP;
 	}
@@ -518,25 +488,25 @@ static int plx9052_set_mem_map(struct pcmcia_socket *sock,
 
 	/* Memory allocation in the first megabyte is problematic on
 	 * some machines with Intel chipset.  */
-	if (mem->sys_start < 0x100000)
+	if (mem->res->start < 0x100000)
 		return -EINVAL;
 
-	len = mem->sys_stop + 1 - mem->sys_start;
+	len = resource_size(mem->res);
 	if (len > PLX_MEMWIN_MAX) {
-		printk(KERN_ERR "Memory map 0x%lx-0x%lx is too long\n",
-		       mem->sys_start, mem->sys_stop);
+		printk(KERN_ERR "Memory map %pR is too long\n",
+		       mem->res);
 		return -EINVAL;
 	}
 
-	if (plx9052_align_check(mem->sys_start, len)) {
+	if (plx9052_align_check(mem->res->start, len)) {
 		printk(KERN_ERR
-		       "Memory map 0x%lx-0x%lx is not size-aligned\n",
-		       mem->sys_start, mem->sys_stop);
+		       "Memory map %pR is not size-aligned\n",
+		       mem->res);
 		return -EINVAL;
 	}
 
 	err =
-	    plx9052_program_area(socket, 0, mem->map, mem->sys_start, len,
+	    plx9052_program_area(socket, 0, mem->map, mem->res->start, len,
 				 mem->card_start | PLX_CIS_START,
 				 mem->flags);
 
@@ -544,8 +514,7 @@ static int plx9052_set_mem_map(struct pcmcia_socket *sock,
 }
 
 
-static irqreturn_t plx9052_interrupt(int irq, void *dev_id,
-				     struct pt_regs *regs)
+static irqreturn_t plx9052_interrupt(int irq, void *dev_id)
 {
 	struct plx9052_socket *socket = (struct plx9052_socket *) dev_id;
 
@@ -569,7 +538,6 @@ static struct pccard_operations plx9052_operations = {
 	.init = plx9052_init,
 	.suspend = plx9052_suspend,
 	.get_status = plx9052_get_status,
-	.get_socket = plx9052_get_socket,
 	.set_socket = plx9052_set_socket,
 	.set_io_map = plx9052_set_io_map,
 	.set_mem_map = plx9052_set_mem_map,
@@ -592,8 +560,7 @@ static int plx9052_probe(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, socket);
 
 	spin_lock_init(&socket->event_lock);
-	INIT_WORK(&socket->event_work, (void (*)(void *)) plx9052_event,
-		  socket);
+	INIT_WORK(&socket->event_work, plx9052_event);
 
 	err = pci_enable_device(pdev);
 	if (err)
@@ -636,7 +603,7 @@ static int plx9052_probe(struct pci_dev *pdev,
 	}
 
 	err =
-	    request_irq(pdev->irq, plx9052_interrupt, SA_SHIRQ,
+	    request_irq(pdev->irq, plx9052_interrupt, IRQF_SHARED,
 			DEVICE_NAME, socket);
 	if (err) {
 		printk(KERN_ERR "plx9052: cannot allocate IRQ %d.\n",
@@ -646,7 +613,7 @@ static int plx9052_probe(struct pci_dev *pdev,
 	}
 
 	socket->socket.ops = &plx9052_operations;
-	socket->socket.dev.dev = &pdev->dev;
+	socket->socket.dev.parent = &pdev->dev;
 	socket->socket.driver_data = socket;
 	socket->socket.owner = THIS_MODULE;
 
@@ -716,35 +683,18 @@ static struct pci_device_id plx9052_pci_id_table[] __devinitdata = {
 
 MODULE_DEVICE_TABLE(pci, plx9052_pci_id_table);
 
-
-static int plx9052_socket_suspend(struct pci_dev *pdev, u32 state)
-{
-	return pcmcia_socket_dev_suspend(&pdev->dev, state);
-}
-
-
-static int plx9052_socket_resume(struct pci_dev *pdev)
-{
-	return pcmcia_socket_dev_resume(&pdev->dev);
-}
-
-
 static struct pci_driver plx9052_driver = {
 	.name = DEVICE_NAME,
 	.id_table = plx9052_pci_id_table,
 	.probe = plx9052_probe,
 	.remove = plx9052_close,
-	.suspend = plx9052_socket_suspend,
-	.resume = plx9052_socket_resume,
 };
 
 
 static int __init init_plx9052(void)
 {
-	pci_module_init(&plx9052_driver);
-	return 0;
+	return pci_register_driver(&plx9052_driver);
 }
-
 
 extern void __exit exit_plx9052(void)
 {
